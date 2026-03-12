@@ -11,6 +11,177 @@ const MAPS_NAMES = ['Benteng', 'Empat Pilar', 'Salib', 'Zigzag', 'Terowongan', '
 const TEAM_COLORS = { Red: '#ef4444', Blue: '#3b82f6', Orange: '#f97316', Purple: '#8b5cf6' }
 
 // ─── CHARACTER SPRITES ────────────────────────────────────────────────────────
+// Offset sudut sprite (radian). Ubah ke mis. 0.15 atau -0.15 jika busur tidak sejajar.
+const SPRITE_ANGLE_OFFSET = 0
+
+// ─── POWER-UP RENDER ──────────────────────────────────────────────────────────
+const ITEM_ICONS = { bomb: '💣', triple: '🏹', rapid: '⚡', pierce: '👻', shield: '🛡️', ice: '❄️', medkit: '💊', homing: '🔮' }
+const ITEM_GLOW = { bomb: '#ef4444', triple: '#f97316', rapid: '#eab308', pierce: '#8b5cf6', shield: '#3b82f6', ice: '#67e8f9', medkit: '#22c55e', homing: '#a78bfa' }
+
+const ITEM_EXPIRE_MS_CLIENT = 12000  // must match server ITEM_EXPIRE_MS
+
+function drawItems(ctx, items) {
+    if (!items || !items.length) return
+    const now = Date.now()
+    for (const item of items) {
+        const age = item.spawnedAt ? now - item.spawnedAt : 0
+        const remaining = ITEM_EXPIRE_MS_CLIENT - age
+        const expireFrac = Math.max(0, remaining / ITEM_EXPIRE_MS_CLIENT) // 1→0 as it expires
+
+        // Flash when < 4 seconds left
+        const isExpiring = remaining < 4000
+        const flashAlpha = isExpiring ? 0.45 + 0.55 * Math.abs(Math.sin(now / 180)) : 1
+
+        const bounce = Math.sin(now / 400 + (item.id || 0) * 1.3) * 5
+        const glow = ITEM_GLOW[item.type] || '#ffffff'
+        const icon = ITEM_ICONS[item.type] || '?'
+        const iy = item.y + bounce
+
+        ctx.save()
+        ctx.globalAlpha = flashAlpha
+
+        // Glow backdrop
+        ctx.save()
+        ctx.shadowColor = glow
+        ctx.shadowBlur = 22
+        ctx.fillStyle = 'rgba(6,10,30,0.78)'
+        ctx.beginPath()
+        ctx.arc(item.x, iy, 20, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.restore()
+
+        // Pulsing ring
+        ctx.save()
+        ctx.strokeStyle = glow
+        ctx.lineWidth = 2.5
+        ctx.globalAlpha = flashAlpha * (0.72 + 0.28 * Math.sin(now / 250 + (item.id || 0)))
+        ctx.beginPath()
+        ctx.arc(item.x, iy, 20, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.restore()
+
+        // Countdown arc showing remaining time (depletes clockwise)
+        ctx.save()
+        ctx.strokeStyle = isExpiring ? '#f87171' : '#ffffff'
+        ctx.lineWidth = 3
+        ctx.globalAlpha = flashAlpha * 0.85
+        ctx.beginPath()
+        ctx.arc(item.x, iy, 26, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * expireFrac)
+        ctx.stroke()
+        ctx.restore()
+
+        // Emoji icon
+        ctx.save()
+        ctx.font = '19px serif'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(icon, item.x, iy)
+        ctx.restore()
+
+        ctx.restore()
+    }
+}
+
+function drawMyEffects(ctx, myPlayer, gameW, gameH) {
+    if (!myPlayer) return
+    const now = Date.now()
+    const eff = myPlayer.effects || {}
+    const icons = []
+    if (myPlayer.hasBomb) icons.push({ icon: '💣', label: 'BOMB [E]', color: '#ef4444', time: null })
+    if (myPlayer.hasShield) icons.push({ icon: '🛡️', label: 'PERISAI', color: '#3b82f6', time: null })
+    if (eff.triple && eff.triple.until > now)
+        icons.push({ icon: '🏹', label: 'TRIPLE', color: '#f97316', time: ((eff.triple.until - now) / 1000).toFixed(1) })
+    if (eff.rapid && eff.rapid.until > now)
+        icons.push({ icon: '⚡', label: 'RAPID', color: '#eab308', time: ((eff.rapid.until - now) / 1000).toFixed(1) })
+    if (eff.pierce && eff.pierce.until > now)
+        icons.push({ icon: '👻', label: 'TEMBUS', color: '#8b5cf6', time: ((eff.pierce.until - now) / 1000).toFixed(1) })
+    if (eff.homing && eff.homing.until > now)
+        icons.push({ icon: '🔮', label: 'HOMING', color: '#a78bfa', time: ((eff.homing.until - now) / 1000).toFixed(1) })
+    if (eff.ice && eff.ice.until > now)
+        icons.push({ icon: '❄️', label: 'PANAH ES', color: '#67e8f9', time: ((eff.ice.until - now) / 1000).toFixed(1) })
+    if (myPlayer.isSlowed) icons.push({ icon: '🐢', label: 'SLOW', color: '#67e8f9', time: null })
+    if (!icons.length) return
+
+    const PW = 68, PH = 52, GAP = 6
+    const totalW = icons.length * PW + (icons.length - 1) * GAP
+    let sx = gameW / 2 - totalW / 2
+    const sy = gameH - 68
+
+    for (const it of icons) {
+        ctx.save()
+        ctx.fillStyle = 'rgba(5,10,24,0.85)'
+        ctx.strokeStyle = it.color + '90'
+        ctx.lineWidth = 1.5
+        ctx.beginPath()
+        ctx.roundRect(sx, sy, PW, PH, 10)
+        ctx.fill()
+        ctx.stroke()
+        ctx.font = '19px serif'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'alphabetic'
+        ctx.fillText(it.icon, sx + PW / 2, sy + 22)
+        ctx.font = 'bold 7.5px Inter, sans-serif'
+        ctx.fillStyle = it.color
+        ctx.fillText(it.label, sx + PW / 2, sy + 34)
+        if (it.time) {
+            ctx.font = 'bold 10px Inter, sans-serif'
+            ctx.fillStyle = '#f1f5f9'
+            ctx.fillText(it.time + 's', sx + PW / 2, sy + 48)
+        }
+        ctx.restore()
+        sx += PW + GAP
+    }
+}
+
+function drawExplosions(ctx, explosions) {
+    const now = Date.now()
+    for (const ex of explosions) {
+        const elapsed = now - ex.startTime
+        const dur = 500
+        if (elapsed > dur) continue
+        const t = elapsed / dur
+        ctx.save()
+        ctx.globalAlpha = (1 - t) * 0.55
+        ctx.strokeStyle = '#f97316'
+        ctx.lineWidth = 3
+        ctx.beginPath()
+        ctx.arc(ex.x, ex.y, ex.radius * t, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.globalAlpha = (1 - t) * 0.22
+        ctx.fillStyle = '#facc15'
+        ctx.beginPath()
+        ctx.arc(ex.x, ex.y, ex.radius * t, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.restore()
+    }
+}
+function drawShieldBlocks(ctx, shieldBlocks, players) {
+    const now = Date.now()
+    const dur = 600
+    for (const sb of shieldBlocks) {
+        const elapsed = now - sb.startTime
+        if (elapsed > dur) continue
+        const t = elapsed / dur
+        const p = players.find(pl => pl.id === sb.playerId)
+        if (!p) continue
+        ctx.save()
+        // Expanding blue ring burst
+        const radius = 28 + 32 * t
+        ctx.globalAlpha = (1 - t) * 0.9
+        ctx.strokeStyle = '#60a5fa'
+        ctx.lineWidth = 4 - 3 * t
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, radius, 0, Math.PI * 2)
+        ctx.stroke()
+        // Inner flash fill
+        ctx.globalAlpha = (1 - t) * 0.25
+        ctx.fillStyle = '#93c5fd'
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, 28, 0, Math.PI * 2)
+        ctx.fill()
+        ctx.restore()
+    }
+}
 const _charImgs = {}
 if (typeof window !== 'undefined') {
     ;['c1', 'c2', 'c3', 'c4'].forEach(k => {
@@ -96,6 +267,31 @@ function drawPlayer(ctx, p, isMe) {
         ctx.restore()
     }
 
+    // ── 2b. Shield aura ring ──
+    if (p.hasShield) {
+        const t = Date.now() / 700
+        const pulse = Math.sin(t) * 3
+        ctx.save()
+        ctx.translate(p.x, p.y)
+        // Outer glow fill
+        ctx.globalAlpha = 0.18 + 0.08 * Math.sin(t)
+        ctx.fillStyle = '#3b82f6'
+        ctx.beginPath()
+        ctx.arc(0, 0, R + 12 + pulse, 0, Math.PI * 2)
+        ctx.fill()
+        // Ring stroke
+        ctx.globalAlpha = 0.75 + 0.2 * Math.sin(t)
+        ctx.strokeStyle = '#93c5fd'
+        ctx.lineWidth = 2.5
+        ctx.shadowColor = '#60a5fa'
+        ctx.shadowBlur = 8
+        ctx.beginPath()
+        ctx.arc(0, 0, R + 11 + pulse, 0, Math.PI * 2)
+        ctx.stroke()
+        ctx.globalAlpha = 1
+        ctx.restore()
+    }
+
     // ── 3. Sprite image — rotate penuh tanpa terbalik ──
     const img = getPlayerCharImg(p.id)
     const half = SIZE / 2
@@ -103,14 +299,12 @@ function drawPlayer(ctx, p, isMe) {
         ctx.save()
         ctx.translate(p.x, p.y)
         if (Math.cos(p.angle) >= 0) {
-            // Hadap kanan: rotate normal (-90° s/d 90°), sprite tidak pernah terbalik
-            ctx.rotate(p.angle)
+            // Hadap kanan: rotate normal dengan offset kalibrasi
+            ctx.rotate(p.angle + SPRITE_ANGLE_OFFSET)
         } else {
-            // Hadap kiri: flip X lalu rotate dengan (π - angle)
-            // Rumus: setelah scale(-1,1), rotate(r) → arah efektif = π - r
-            // Agar arah efektif = p.angle → r = π - p.angle
+            // Hadap kiri: flip X lalu rotate dengan kalibrasi
             ctx.scale(-1, 1)
-            ctx.rotate(Math.PI - p.angle)
+            ctx.rotate(Math.PI - p.angle - SPRITE_ANGLE_OFFSET)
         }
         ctx.drawImage(img, -half, -half, SIZE, SIZE)
         ctx.restore()
@@ -404,6 +598,8 @@ export default function GamePage() {
     const mouseAngleRef = useRef(0)
     const animFrameRef = useRef(null)
     const modeRef = useRef('1v1')
+    const explosionsRef = useRef([])
+    const shieldBlocksRef = useRef([])
 
     const [phase, setPhase] = useState('connecting') // connecting | waiting | playing | gameover
     const [statusMsg, setStatusMsg] = useState('Menghubungkan...')
@@ -428,10 +624,20 @@ export default function GamePage() {
         drawObstacles(ctx, obstaclesRef.current)
 
         if (state) {
+            drawItems(ctx, state.items || [])
             for (const arrow of state.arrows) drawArrow(ctx, arrow)
             for (const player of state.players) {
                 drawPlayer(ctx, player, player.id === myId)
             }
+            // Clean expired explosions
+            const now = Date.now()
+            explosionsRef.current = explosionsRef.current.filter(e => now - e.startTime < 500)
+            drawExplosions(ctx, explosionsRef.current)
+            // Clean expired shield blocks and draw flash
+            shieldBlocksRef.current = shieldBlocksRef.current.filter(sb => now - sb.startTime < 600)
+            drawShieldBlocks(ctx, shieldBlocksRef.current, state.players)
+            const myPlayer = state.players.find(p => p.id === myId)
+            drawMyEffects(ctx, myPlayer, w, h)
             drawHUD(ctx, state.players, myId, w, h, modeRef.current)
         }
 
@@ -502,6 +708,14 @@ export default function GamePage() {
             animFrameRef.current = requestAnimationFrame(renderLoop)
         })
 
+        socket.on('bomb_explosion', ({ x, y, radius }) => {
+            explosionsRef.current.push({ x, y, radius, startTime: Date.now() })
+        })
+
+        socket.on('shield_blocked', ({ playerId }) => {
+            shieldBlocksRef.current.push({ playerId, startTime: Date.now() })
+        })
+
         socket.on('game_state', (state) => {
             gameStateRef.current = state
         })
@@ -529,6 +743,11 @@ export default function GamePage() {
         const MAP = { w: 'w', a: 'a', s: 's', d: 'd', arrowup: 'w', arrowleft: 'a', arrowdown: 's', arrowright: 'd' }
 
         function onKeyDown(e) {
+            // Bomb: E key
+            if (e.key.toLowerCase() === 'e') {
+                socket?.emit('use_bomb')
+                return
+            }
             const k = MAP[e.key.toLowerCase()]
             if (!k) return
             e.preventDefault()
@@ -780,6 +999,7 @@ export default function GamePage() {
                             <button className="dpad-btn right" onTouchStart={e => { e.preventDefault(); keysRef.current.d = true; socket?.emit('input_keys', { keys: keysRef.current }) }} onTouchEnd={() => { keysRef.current.d = false; socket?.emit('input_keys', { keys: keysRef.current }) }}>▶</button>
                             <button className="dpad-btn bottom" onTouchStart={e => { e.preventDefault(); keysRef.current.s = true; socket?.emit('input_keys', { keys: keysRef.current }) }} onTouchEnd={() => { keysRef.current.s = false; socket?.emit('input_keys', { keys: keysRef.current }) }}>▼</button>
                         </div>
+                        <button className="bomb-btn" onTouchStart={e => { e.preventDefault(); socket?.emit('use_bomb') }}>💣</button>
                     </div>
                 )}
             </div>

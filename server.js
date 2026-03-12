@@ -34,6 +34,18 @@ const MAX_HP = 100
 const RELOAD_MS = 600  // ms between shots
 const TICK_RATE = 60   // server ticks per second
 
+// ─── POWER-UP CONSTANTS ──────────────────────────────────────────────────────
+const ITEM_TYPES = ['bomb', 'triple', 'rapid', 'pierce', 'shield', 'ice', 'medkit', 'homing']
+const ITEM_RADIUS = 22
+const ITEM_SPAWN_TICKS = 8 * 60   // every 8 seconds
+const ITEM_MAX = 2
+const ITEM_EXPIRE_MS = 12000       // item disappears if not picked up within 12 s
+const ITEM_DURATION = { triple: 14000, rapid: 10000, pierce: 14000, homing: 12000, ice: 14000 }
+const BOMB_RADIUS = 120
+const BOMB_DAMAGE = 60
+const ICE_SLOW_MS = 4000
+const ICE_SLOW_FACTOR = 0.35
+
 // ─── MAPS (rotasi otomatis tiap ronde) ──────────────────────────────────────
 const MAPS = [
     {
@@ -114,8 +126,12 @@ function createRoom(roomId, mode = '1v1') {
         id: roomId,
         mode,
         maxPlayers: mode === '2v2' ? 4 : mode === 'practice' ? 1 : 2,
-        players: {},   // socketId -> playerState
+        players: {},
         arrows: [],
+        items: [],
+        itemIdCounter: 0,
+        itemSpawnTick: 0,
+        ticker: 0,
         gameStarted: false,
         winner: null,
         loopInterval: null,
@@ -143,6 +159,10 @@ function createPlayer(socketId, name, spawnIndex) {
         mouseAngle: spawn.angle,
         lastShot: 0,
         spawnIndex,
+        effects: {},     // { triple, rapid, pierce, homing } each = { until: timestamp }
+        hasBomb: false,
+        hasShield: false,
+        slowUntil: 0,
     }
 }
 
@@ -180,6 +200,40 @@ function resolvePlayerObstacle(player, obstacles) {
     }
 }
 
+// ─── ITEM HELPERS ─────────────────────────────────────────────────────────────
+function shuffleArray(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]]
+    }
+    return arr
+}
+
+function nextItemType(room) {
+    // Refill bag when empty — guarantees 1 of each type per 8 spawns
+    if (!room.itemBag || room.itemBag.length === 0) {
+        room.itemBag = shuffleArray([...ITEM_TYPES])
+    }
+    return room.itemBag.pop()
+}
+
+function spawnItem(room) {
+    if (room.items.length >= ITEM_MAX) return
+    for (let attempt = 0; attempt < 40; attempt++) {
+        const x = 80 + Math.random() * (GAME_W - 160)
+        const y = 80 + Math.random() * (GAME_H - 160)
+        let blocked = false
+        for (const o of room.obstacles) {
+            if (circleRect(x, y, ITEM_RADIUS + 15, o.x, o.y, o.w, o.h)) { blocked = true; break }
+        }
+        if (!blocked) {
+            const type = nextItemType(room)
+            room.items.push({ id: room.itemIdCounter++, type, x, y, spawnedAt: Date.now() })
+            return
+        }
+    }
+}
+
 // ─── GAME LOOP ────────────────────────────────────────────────────────────────
 function startGameLoop(room, io) {
     if (room.loopInterval) clearInterval(room.loopInterval)
@@ -190,6 +244,9 @@ function startGameLoop(room, io) {
         const now = Date.now()
         const players = Object.values(room.players)
 
+        // Tick counter (for item spawning)
+        room.ticker = (room.ticker || 0) + 1
+
         // Update player positions
         for (const p of players) {
             if (!p.alive) continue
@@ -198,38 +255,89 @@ function startGameLoop(room, io) {
             if (p.keys.s) dy += 1
             if (p.keys.a) dx -= 1
             if (p.keys.d) dx += 1
-            if (dx !== 0 && dy !== 0) {
-                dx *= 0.707
-                dy *= 0.707
-            }
-            p.x = Math.max(PLAYER_RADIUS, Math.min(GAME_W - PLAYER_RADIUS, p.x + dx * PLAYER_SPEED))
-            p.y = Math.max(PLAYER_RADIUS, Math.min(GAME_H - PLAYER_RADIUS, p.y + dy * PLAYER_SPEED))
+            if (dx !== 0 && dy !== 0) { dx *= 0.707; dy *= 0.707 }
+            // Ice slow effect
+            const spd = now < (p.slowUntil || 0) ? PLAYER_SPEED * ICE_SLOW_FACTOR : PLAYER_SPEED
+            p.x = Math.max(PLAYER_RADIUS, Math.min(GAME_W - PLAYER_RADIUS, p.x + dx * spd))
+            p.y = Math.max(PLAYER_RADIUS, Math.min(GAME_H - PLAYER_RADIUS, p.y + dy * spd))
             p.angle = p.mouseAngle
             resolvePlayerObstacle(p, room.obstacles)
+        }
+
+        // Item spawn check
+        if (room.ticker % ITEM_SPAWN_TICKS === 0) spawnItem(room)
+
+        // Item expiry: remove items nobody picked up in time, then try to spawn replacement
+        const prevLen = room.items.length
+        room.items = room.items.filter(item => {
+            if (now - item.spawnedAt > ITEM_EXPIRE_MS) {
+                io.to(room.id).emit('item_expired', { itemId: item.id })
+                return false
+            }
+            return true
+        })
+        if (room.items.length < prevLen) spawnItem(room)
+
+        // Item pickup: player walks over item (auto-pickup)
+        for (const p of players) {
+            if (!p.alive) continue
+            room.items = room.items.filter(item => {
+                const dx = p.x - item.x, dy = p.y - item.y
+                if (dx * dx + dy * dy > (PLAYER_RADIUS + ITEM_RADIUS) ** 2) return true
+                // Apply power-up
+                switch (item.type) {
+                    case 'bomb': p.hasBomb = true; break
+                    case 'triple': p.effects.triple = { until: now + ITEM_DURATION.triple }; break
+                    case 'rapid': p.effects.rapid = { until: now + ITEM_DURATION.rapid }; break
+                    case 'pierce': p.effects.pierce = { until: now + ITEM_DURATION.pierce }; break
+                    case 'homing': p.effects.homing = { until: now + ITEM_DURATION.homing }; break
+                    case 'shield': p.hasShield = true; break
+                    case 'medkit': p.hp = Math.min(MAX_HP, p.hp + 40); break
+                    case 'ice': p.effects.ice = { until: now + ITEM_DURATION.ice }; break
+                }
+                io.to(room.id).emit('item_picked', { playerId: p.id, type: item.type })
+                return false
+            })
         }
 
         // Update arrows
         const surviving = []
         for (const arrow of room.arrows) {
+            // Homing: steer toward nearest enemy
+            if (arrow.homing) {
+                const allTargets = [
+                    ...players.filter(p => p.id !== arrow.ownerId && p.alive),
+                    ...(room.bots || []).filter(b => b.alive && b.id !== arrow.ownerId)
+                ]
+                let nearDist = Infinity, nearX = 0, nearY = 0
+                for (const t of allTargets) {
+                    const ddx = t.x - arrow.x, ddy = t.y - arrow.y
+                    const d = ddx * ddx + ddy * ddy
+                    if (d < nearDist) { nearDist = d; nearX = t.x; nearY = t.y }
+                }
+                if (nearDist < Infinity) {
+                    const ddx = nearX - arrow.x, ddy = nearY - arrow.y
+                    const len = Math.sqrt(ddx * ddx + ddy * ddy) || 1
+                    arrow.vx += (ddx / len * ARROW_SPEED - arrow.vx) * 0.12
+                    arrow.vy += (ddy / len * ARROW_SPEED - arrow.vy) * 0.12
+                }
+            }
+
             arrow.x += arrow.vx
             arrow.y += arrow.vy
 
             // Out of bounds
             if (arrow.x < 0 || arrow.x > GAME_W || arrow.y < 0 || arrow.y > GAME_H) continue
 
-            // Hit obstacle
+            // Hit obstacle (pierce arrows pass through)
             let hitObstacle = false
             for (const o of room.obstacles) {
-                // Arrow tip
                 if (
                     arrow.x >= o.x && arrow.x <= o.x + o.w &&
                     arrow.y >= o.y && arrow.y <= o.y + o.h
-                ) {
-                    hitObstacle = true
-                    break
-                }
+                ) { hitObstacle = true; break }
             }
-            if (hitObstacle) continue
+            if (hitObstacle && !arrow.pierce) continue
 
             // Hit player or bot
             let hitSomething = false
@@ -244,8 +352,21 @@ function startGameLoop(room, io) {
                     const dx = arrow.x - p.x
                     const dy = arrow.y - p.y
                     if (dx * dx + dy * dy < (PLAYER_RADIUS + 4) ** 2) {
+                        if (arrow.hitIds && arrow.hitIds.includes(p.id)) continue
+                        // Shield absorbs hit
+                        if (p.hasShield) {
+                            p.hasShield = false
+                            io.to(room.id).emit('shield_blocked', { playerId: p.id })
+                            hitSomething = !arrow.pierce
+                            if (!arrow.hitIds) arrow.hitIds = []
+                            arrow.hitIds.push(p.id)
+                            break
+                        }
                         p.hp = Math.max(0, p.hp - ARROW_DAMAGE)
-                        hitSomething = true
+                        // Ice arrow slows target
+                        if (arrow.ice) p.slowUntil = now + ICE_SLOW_MS
+                        if (arrow.hitIds) arrow.hitIds.push(p.id)
+                        hitSomething = !arrow.pierce
                         if (p.hp <= 0) {
                             p.alive = false
                             const teamsAlive = {}
@@ -265,7 +386,7 @@ function startGameLoop(room, io) {
                                 io.to(room.id).emit('game_over', room.winner)
                             }
                         }
-                        break
+                        if (!arrow.pierce) break
                     }
                 }
             }
@@ -298,6 +419,13 @@ function startGameLoop(room, io) {
                         const dx = arrow.x - p.x
                         const dy = arrow.y - p.y
                         if (dx * dx + dy * dy < (PLAYER_RADIUS + 4) ** 2) {
+                            // Shield absorbs the hit
+                            if (p.hasShield) {
+                                p.hasShield = false
+                                io.to(room.id).emit('shield_blocked', { playerId: p.id })
+                                hitSomething = true
+                                break
+                            }
                             p.hp = Math.max(0, p.hp - ARROW_DAMAGE)
                             hitSomething = true
                             if (p.hp <= 0) {
@@ -315,6 +443,7 @@ function startGameLoop(room, io) {
             if (!hitSomething) surviving.push(arrow)
         }
         room.arrows = surviving
+
 
         // Bot AI (practice mode)
         if (room.mode === 'practice' && room.bots && room.gameStarted) {
@@ -364,7 +493,7 @@ function startGameLoop(room, io) {
                     const dy = mainPlayer.y - bot.y
                     bot.angle = Math.atan2(dy, dx)
                     if (bot.moveTick % 90 === 0) {
-                        const BOW_DIST = PLAYER_RADIUS + 8
+                        const BOW_DIST = PLAYER_RADIUS + 14
                         room.arrows.push({
                             id: room.arrowIdCounter++,
                             x: bot.x + Math.cos(bot.angle) * BOW_DIST,
@@ -389,10 +518,14 @@ function startGameLoop(room, io) {
                 id: p.id, name: p.name, x: p.x, y: p.y,
                 angle: p.angle, hp: p.hp, alive: p.alive, color: p.color,
                 colorName: p.colorName, team: p.team,
+                effects: p.effects, hasBomb: p.hasBomb, hasShield: p.hasShield,
+                isSlowed: now < (p.slowUntil || 0),
             })), ...botSnapshot],
             arrows: room.arrows.map(a => ({
                 id: a.id, x: a.x, y: a.y, vx: a.vx, vy: a.vy,
+                homing: a.homing, pierce: a.pierce, ice: a.ice,
             })),
+            items: room.items,
         })
     }, 1000 / TICK_RATE)
 }
@@ -494,18 +627,58 @@ app.prepare().then(() => {
             if (!player || !player.alive) return
 
             const now = Date.now()
-            if (now - player.lastShot < RELOAD_MS) return
+            const hasRapid = player.effects.rapid && player.effects.rapid.until > now
+            const hasTriple = player.effects.triple && player.effects.triple.until > now
+            const hasPierce = player.effects.pierce && player.effects.pierce.until > now
+            const hasHoming = player.effects.homing && player.effects.homing.until > now
+            const hasIce = player.effects.ice && player.effects.ice.until > now
+
+            const reloadMs = hasRapid ? RELOAD_MS / 5 : RELOAD_MS
+            if (now - player.lastShot < reloadMs) return
             player.lastShot = now
 
-            const BOW_DIST = PLAYER_RADIUS + 8
-            room.arrows.push({
-                id: room.arrowIdCounter++,
-                x: player.x + Math.cos(player.angle) * BOW_DIST,
-                y: player.y + Math.sin(player.angle) * BOW_DIST,
-                vx: Math.cos(player.angle) * ARROW_SPEED,
-                vy: Math.sin(player.angle) * ARROW_SPEED,
-                ownerId: socket.id,
-            })
+            const BOW_DIST = PLAYER_RADIUS + 14
+            const angles = hasTriple
+                ? [player.angle - 0.22, player.angle, player.angle + 0.22]
+                : [player.angle]
+
+            for (const ang of angles) {
+                room.arrows.push({
+                    id: room.arrowIdCounter++,
+                    x: player.x + Math.cos(ang) * BOW_DIST,
+                    y: player.y + Math.sin(ang) * BOW_DIST,
+                    vx: Math.cos(ang) * ARROW_SPEED,
+                    vy: Math.sin(ang) * ARROW_SPEED,
+                    ownerId: socket.id,
+                    pierce: !!hasPierce,
+                    homing: !!hasHoming,
+                    ice: !!hasIce,
+                    hitIds: [],
+                })
+            }
+        })
+
+        // ── INPUT: USE BOMB ────────────────────────────────────────────────────────
+        socket.on('use_bomb', () => {
+            const room = rooms[socket.data.roomId]
+            if (!room || !room.gameStarted) return
+            const player = room.players[socket.id]
+            if (!player || !player.alive || !player.hasBomb) return
+            player.hasBomb = false
+
+            const allTargets = [
+                ...Object.values(room.players).filter(p => p.id !== socket.id && p.alive),
+                ...(room.bots || []).filter(b => b.alive)
+            ]
+            for (const t of allTargets) {
+                if (room.mode === '2v2' && t.team === player.team) continue
+                const ddx = t.x - player.x, ddy = t.y - player.y
+                if (ddx * ddx + ddy * ddy < BOMB_RADIUS * BOMB_RADIUS) {
+                    t.hp = Math.max(0, t.hp - BOMB_DAMAGE)
+                    if (t.hp <= 0) t.alive = false
+                }
+            }
+            io.to(room.id).emit('bomb_explosion', { x: player.x, y: player.y, radius: BOMB_RADIUS })
         })
 
         // ── REMATCH ────────────────────────────────────────────────────────────────
@@ -518,6 +691,11 @@ app.prepare().then(() => {
             room.winner = null
             room.arrows = []
             room.arrowIdCounter = 0
+            room.items = []
+            room.itemIdCounter = 0
+            room.itemSpawnTick = 0
+            room.itemBag = []
+            room.ticker = 0
             const playerList = Object.values(room.players)
             playerList.forEach((p, i) => {
                 const spawn = SPAWN_POSITIONS[p.spawnIndex] || SPAWN_POSITIONS[i % 2]
@@ -529,6 +707,10 @@ app.prepare().then(() => {
                 p.mouseAngle = spawn.angle
                 p.angle = spawn.angle
                 p.lastShot = 0
+                p.effects = {}
+                p.hasBomb = false
+                p.hasShield = false
+                p.slowUntil = 0
             })
             // Reset bots in practice mode
             if (room.mode === 'practice') {
