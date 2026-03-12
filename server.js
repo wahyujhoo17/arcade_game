@@ -113,7 +113,7 @@ function createRoom(roomId, mode = '1v1') {
     return {
         id: roomId,
         mode,
-        maxPlayers: mode === '2v2' ? 4 : 2,
+        maxPlayers: mode === '2v2' ? 4 : mode === 'practice' ? 1 : 2,
         players: {},   // socketId -> playerState
         arrows: [],
         gameStarted: false,
@@ -231,52 +231,165 @@ function startGameLoop(room, io) {
             }
             if (hitObstacle) continue
 
-            // Hit player
-            let hitPlayer = false
+            // Hit player or bot
+            let hitSomething = false
             const shooter = room.players[arrow.ownerId]
-            for (const p of players) {
-                if (p.id === arrow.ownerId || !p.alive) continue
-                // No friendly fire in 2v2
-                if (room.mode === '2v2' && shooter && p.team === shooter.team) continue
-                const dx = arrow.x - p.x
-                const dy = arrow.y - p.y
-                if (dx * dx + dy * dy < (PLAYER_RADIUS + 4) ** 2) {
-                    p.hp = Math.max(0, p.hp - ARROW_DAMAGE)
-                    hitPlayer = true
-                    if (p.hp <= 0) {
-                        p.alive = false
-                        // Team-based win check
-                        const teamsAlive = {}
-                        for (const pl of players) {
-                            if (pl.alive) teamsAlive[pl.team] = (teamsAlive[pl.team] || 0) + 1
-                        }
-                        const aliveTeams = Object.keys(teamsAlive)
-                        if (aliveTeams.length <= 1) {
-                            if (aliveTeams.length === 1) {
-                                const winTeam = aliveTeams[0]
-                                const winNames = players.filter(pl => pl.team === winTeam).map(pl => pl.name)
-                                room.winner = { team: winTeam, name: winNames.join(' & '), color: winTeam }
-                            } else {
-                                room.winner = { team: 'Draw', name: 'Seri!', color: 'Draw' }
+
+            // Check hit on real players (only in non-practice)
+            if (room.mode !== 'practice') {
+                for (const p of players) {
+                    if (p.id === arrow.ownerId || !p.alive) continue
+                    // No friendly fire in 2v2
+                    if (room.mode === '2v2' && shooter && p.team === shooter.team) continue
+                    const dx = arrow.x - p.x
+                    const dy = arrow.y - p.y
+                    if (dx * dx + dy * dy < (PLAYER_RADIUS + 4) ** 2) {
+                        p.hp = Math.max(0, p.hp - ARROW_DAMAGE)
+                        hitSomething = true
+                        if (p.hp <= 0) {
+                            p.alive = false
+                            const teamsAlive = {}
+                            for (const pl of players) {
+                                if (pl.alive) teamsAlive[pl.team] = (teamsAlive[pl.team] || 0) + 1
                             }
-                            room.gameStarted = false
-                            io.to(room.id).emit('game_over', room.winner)
+                            const aliveTeams = Object.keys(teamsAlive)
+                            if (aliveTeams.length <= 1) {
+                                if (aliveTeams.length === 1) {
+                                    const winTeam = aliveTeams[0]
+                                    const winNames = players.filter(pl => pl.team === winTeam).map(pl => pl.name)
+                                    room.winner = { team: winTeam, name: winNames.join(' & '), color: winTeam }
+                                } else {
+                                    room.winner = { team: 'Draw', name: 'Seri!', color: 'Draw' }
+                                }
+                                room.gameStarted = false
+                                io.to(room.id).emit('game_over', room.winner)
+                            }
                         }
+                        break
                     }
-                    break
                 }
             }
-            if (!hitPlayer) surviving.push(arrow)
+
+            // In practice mode: arrows from player hit bots, bot arrows hit player
+            if (room.mode === 'practice' && room.bots) {
+                const isPlayerArrow = !!room.players[arrow.ownerId]
+                if (isPlayerArrow) {
+                    for (const bot of room.bots) {
+                        if (!bot.alive) continue
+                        const dx = arrow.x - bot.x
+                        const dy = arrow.y - bot.y
+                        if (dx * dx + dy * dy < (PLAYER_RADIUS + 4) ** 2) {
+                            bot.hp = Math.max(0, bot.hp - ARROW_DAMAGE)
+                            hitSomething = true
+                            if (bot.hp <= 0) bot.alive = false
+                            // Win if all bots dead
+                            if (room.bots.every(b => !b.alive)) {
+                                room.winner = { team: 'Red', name: players[0]?.name || 'Pemain', color: '#ef4444' }
+                                room.gameStarted = false
+                                io.to(room.id).emit('game_over', room.winner)
+                            }
+                            break
+                        }
+                    }
+                } else {
+                    // Bot arrow hits player
+                    for (const p of players) {
+                        if (!p.alive) continue
+                        const dx = arrow.x - p.x
+                        const dy = arrow.y - p.y
+                        if (dx * dx + dy * dy < (PLAYER_RADIUS + 4) ** 2) {
+                            p.hp = Math.max(0, p.hp - ARROW_DAMAGE)
+                            hitSomething = true
+                            if (p.hp <= 0) {
+                                p.alive = false
+                                room.winner = { team: 'Bot', name: 'Target', color: '#ef4444' }
+                                room.gameStarted = false
+                                io.to(room.id).emit('game_over', room.winner)
+                            }
+                            break
+                        }
+                    }
+                }
+            }
+
+            if (!hitSomething) surviving.push(arrow)
         }
         room.arrows = surviving
 
+        // Bot AI (practice mode)
+        if (room.mode === 'practice' && room.bots && room.gameStarted) {
+            const mainPlayer = players[0]
+            for (const bot of room.bots) {
+                if (!bot.alive) continue
+                bot.moveTick = (bot.moveTick || 0) + 1
+
+                // Obstacle-aware patrol: check collision BEFORE moving
+                const STEP = 1.5
+                const nextY = bot.y + bot.moveDir * STEP
+                let blockedY = nextY < PLAYER_RADIUS || nextY > GAME_H - PLAYER_RADIUS
+                if (!blockedY) {
+                    for (const o of room.obstacles) {
+                        if (circleRect(bot.x, nextY, PLAYER_RADIUS, o.x, o.y, o.w, o.h)) {
+                            blockedY = true; break
+                        }
+                    }
+                }
+
+                if (blockedY) {
+                    // Reverse patrol direction
+                    bot.moveDir *= -1
+                    // Sidestep in X to get around the obstacle
+                    const sideX = bot.id === 'bot1' ? -STEP * 2 : STEP * 2
+                    const nextX = bot.x + sideX
+                    let blockedX = nextX < PLAYER_RADIUS || nextX > GAME_W - PLAYER_RADIUS
+                    if (!blockedX) {
+                        for (const o of room.obstacles) {
+                            if (circleRect(nextX, bot.y, PLAYER_RADIUS, o.x, o.y, o.w, o.h)) {
+                                blockedX = true; break
+                            }
+                        }
+                    }
+                    if (!blockedX) bot.x = nextX
+                } else {
+                    bot.y = nextY
+                }
+
+                // Hard clamp (safety)
+                bot.x = Math.max(PLAYER_RADIUS, Math.min(GAME_W - PLAYER_RADIUS, bot.x))
+                bot.y = Math.max(PLAYER_RADIUS, Math.min(GAME_H - PLAYER_RADIUS, bot.y))
+
+                // Aim at player and shoot every ~1.5s
+                if (mainPlayer && mainPlayer.alive) {
+                    const dx = mainPlayer.x - bot.x
+                    const dy = mainPlayer.y - bot.y
+                    bot.angle = Math.atan2(dy, dx)
+                    if (bot.moveTick % 90 === 0) {
+                        const BOW_DIST = PLAYER_RADIUS + 8
+                        room.arrows.push({
+                            id: room.arrowIdCounter++,
+                            x: bot.x + Math.cos(bot.angle) * BOW_DIST,
+                            y: bot.y + Math.sin(bot.angle) * BOW_DIST,
+                            vx: Math.cos(bot.angle) * (ARROW_SPEED * 0.85),
+                            vy: Math.sin(bot.angle) * (ARROW_SPEED * 0.85),
+                            ownerId: bot.id,
+                        })
+                    }
+                }
+            }
+        }
+
         // Broadcast state
+        const botSnapshot = (room.bots || []).map(b => ({
+            id: b.id, name: b.name, x: b.x, y: b.y,
+            angle: b.angle, hp: b.hp, alive: b.alive,
+            color: b.color, colorName: b.colorName, team: b.team,
+        }))
         io.to(room.id).emit('game_state', {
-            players: players.map(p => ({
+            players: [...players.map(p => ({
                 id: p.id, name: p.name, x: p.x, y: p.y,
                 angle: p.angle, hp: p.hp, alive: p.alive, color: p.color,
                 colorName: p.colorName, team: p.team,
-            })),
+            })), ...botSnapshot],
             arrows: room.arrows.map(a => ({
                 id: a.id, x: a.x, y: a.y, vx: a.vx, vy: a.vy,
             })),
@@ -329,6 +442,15 @@ app.prepare().then(() => {
             if (Object.keys(room.players).length === room.maxPlayers) {
                 room.gameStarted = true
                 room.winner = null
+
+                // Practice mode: add 2 bot targets
+                if (room.mode === 'practice') {
+                    room.bots = [
+                        { id: 'bot1', name: 'Target A', x: 750, y: 150, angle: Math.PI, hp: MAX_HP, alive: true, color: '#ef4444', colorName: 'Merah', team: 'Bot', lastShot: 0, moveDir: 1, moveTick: 0 },
+                        { id: 'bot2', name: 'Target B', x: 750, y: 450, angle: Math.PI, hp: MAX_HP, alive: true, color: '#8b5cf6', colorName: 'Ungu', team: 'Bot', lastShot: 0, moveDir: -1, moveTick: 0 },
+                    ]
+                }
+
                 io.to(roomId).emit('game_start', {
                     obstacles: room.obstacles,
                     mapName: MAPS[room.mapIndex].name,
@@ -390,7 +512,7 @@ app.prepare().then(() => {
         socket.on('request_rematch', () => {
             const room = rooms[socket.data.roomId]
             if (!room) return
-            if (Object.keys(room.players).length < room.maxPlayers) return
+            if (room.mode !== 'practice' && Object.keys(room.players).length < room.maxPlayers) return
 
             // Reset
             room.winner = null
@@ -408,6 +530,13 @@ app.prepare().then(() => {
                 p.angle = spawn.angle
                 p.lastShot = 0
             })
+            // Reset bots in practice mode
+            if (room.mode === 'practice') {
+                room.bots = [
+                    { id: 'bot1', name: 'Target A', x: 750, y: 150, angle: Math.PI, hp: MAX_HP, alive: true, color: '#ef4444', colorName: 'Merah', team: 'Bot', lastShot: 0, moveDir: 1, moveTick: 0 },
+                    { id: 'bot2', name: 'Target B', x: 750, y: 450, angle: Math.PI, hp: MAX_HP, alive: true, color: '#8b5cf6', colorName: 'Ungu', team: 'Bot', lastShot: 0, moveDir: -1, moveTick: 0 },
+                ]
+            }
             // Rotasi ke map berikutnya
             room.mapIndex = (room.mapIndex + 1) % MAPS.length
             room.obstacles = MAPS[room.mapIndex].obstacles

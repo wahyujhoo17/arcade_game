@@ -10,6 +10,26 @@ let socket = null
 const MAPS_NAMES = ['Benteng', 'Empat Pilar', 'Salib', 'Zigzag', 'Terowongan', 'Tembok Simetri']
 const TEAM_COLORS = { Red: '#ef4444', Blue: '#3b82f6', Orange: '#f97316', Purple: '#8b5cf6' }
 
+// ─── CHARACTER SPRITES ────────────────────────────────────────────────────────
+const _charImgs = {}
+if (typeof window !== 'undefined') {
+    ;['c1', 'c2', 'c3', 'c4'].forEach(k => {
+        _charImgs[k] = new Image()
+        _charImgs[k].src = `/img/${k}.png`
+    })
+}
+// Stable per-player sprite assignment (reset each game session)
+const _playerCharMap = {}
+const _charKeys = ['c1', 'c2', 'c3', 'c4']
+let _charCounter = 0
+function getPlayerCharImg(playerId) {
+    if (!_playerCharMap[playerId]) {
+        _playerCharMap[playerId] = _charKeys[_charCounter % 4]
+        _charCounter++
+    }
+    return _charImgs[_playerCharMap[playerId]]
+}
+
 // ─── DRAW HELPERS ─────────────────────────────────────────────────────────────
 function drawObstacles(ctx, obstacles) {
     for (const o of obstacles) {
@@ -46,23 +66,24 @@ function drawObstacles(ctx, obstacles) {
 function drawPlayer(ctx, p, isMe) {
     if (!p.alive) return
 
-    const R = 20
+    const R = 22
+    const SIZE = 72   // rendered sprite size in px
     const tc = p.color
 
     // ── 1. Ground shadow ──
     ctx.save()
-    ctx.translate(p.x, p.y + 5)
-    ctx.scale(1.35, 0.4)
+    ctx.translate(p.x, p.y + 6)
+    ctx.scale(1.3, 0.35)
     ctx.beginPath()
-    ctx.arc(0, 0, R + 2, 0, Math.PI * 2)
-    ctx.fillStyle = 'rgba(0,0,0,0.30)'
+    ctx.arc(0, 0, R + 4, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgba(0,0,0,0.28)'
     ctx.fill()
     ctx.restore()
 
     // ── 2. "Me" animated selection ring ──
     if (isMe) {
         const t = Date.now() / 500
-        const pr = R + 8 + Math.sin(t) * 3.5
+        const pr = R + 9 + Math.sin(t) * 3.5
         ctx.save()
         ctx.translate(p.x, p.y)
         ctx.strokeStyle = tc
@@ -75,160 +96,39 @@ function drawPlayer(ctx, p, isMe) {
         ctx.restore()
     }
 
-    ctx.save()
-    ctx.translate(p.x, p.y)
-
-    // ── 3. Body circle ──
-    const bodyGrad = ctx.createRadialGradient(-R * 0.28, -R * 0.28, 1, 0, 0, R)
-    bodyGrad.addColorStop(0, lightenColor(tc, 65))
-    bodyGrad.addColorStop(0.55, tc)
-    bodyGrad.addColorStop(1, darkenColor(tc, 45))
-    ctx.beginPath()
-    ctx.arc(0, 0, R, 0, Math.PI * 2)
-    ctx.fillStyle = bodyGrad
-    ctx.fill()
-
-    // Belt line (simple horizontal stripe clipped to body)
-    ctx.save()
-    ctx.clip()
-    ctx.fillStyle = darkenColor(tc, 30)
-    ctx.fillRect(-R, -3.5, R * 2, 7)
-    // Belt buckle
-    ctx.fillStyle = '#facc15'
-    ctx.fillRect(-3.5, -2.5, 7, 5)
-    ctx.restore()
-
-    // Body border
-    ctx.strokeStyle = isMe ? '#facc15' : darkenColor(tc, 20)
-    ctx.lineWidth = isMe ? 2.5 : 1.8
-    ctx.beginPath()
-    ctx.arc(0, 0, R, 0, Math.PI * 2)
-    ctx.stroke()
-
-    // ── 4. Head (small circle protruding toward the back) ──
-    const BACK = p.angle + Math.PI
-    const hd = 11  // distance from center to head center
-    const hx = Math.cos(BACK) * hd
-    const hy = Math.sin(BACK) * hd
-    const HR = 8.5
-
-    // Skin
-    const hGrad = ctx.createRadialGradient(hx - 2.5, hy - 2.5, 1, hx, hy, HR)
-    hGrad.addColorStop(0, '#fde3b6')
-    hGrad.addColorStop(1, '#c8855a')
-    ctx.beginPath()
-    ctx.arc(hx, hy, HR, 0, Math.PI * 2)
-    ctx.fillStyle = hGrad
-    ctx.fill()
-    ctx.strokeStyle = 'rgba(0,0,0,0.22)'
-    ctx.lineWidth = 1
-    ctx.stroke()
-
-    // Hair cap (back half of head in team color – like a cap/helmet)
-    ctx.save()
-    ctx.beginPath()
-    ctx.arc(hx, hy, HR, BACK - Math.PI * 0.6, BACK + Math.PI * 0.6)
-    ctx.lineTo(hx, hy)
-    ctx.closePath()
-    ctx.fillStyle = darkenColor(tc, 20)
-    ctx.fill()
-    // Cap rim
-    ctx.strokeStyle = lightenColor(tc, 40)
-    ctx.lineWidth = 1.2
-    ctx.stroke()
-    ctx.restore()
-
-    // Face dot (eye on front side)
-    const eyeX = hx + Math.cos(p.angle) * 4.5
-    const eyeY = hy + Math.sin(p.angle) * 4.5
-    ctx.beginPath()
-    ctx.arc(eyeX, eyeY, 1.8, 0, Math.PI * 2)
-    ctx.fillStyle = '#1e1b1a'
-    ctx.fill()
-
-    // ── 5. Bow arm + Recurve bow (rotated to aim direction) ──
-    ctx.save()
-    ctx.rotate(p.angle)
-
-    const armStart = R * 0.3
-    const armEnd = R + 7
-
-    // Forearm
-    ctx.strokeStyle = '#bf8a52'
-    ctx.lineWidth = 5
-    ctx.lineCap = 'round'
-    ctx.beginPath()
-    ctx.moveTo(armStart, 0)
-    ctx.lineTo(armEnd, 0)
-    ctx.stroke()
-
-    // --- Recurve bow ---
-    const bx = armEnd + 2   // bow pivot x
-    const bh = 16           // half-height of bow limbs
-
-    // Bow wood (two quadratic limbs)
-    ctx.strokeStyle = '#4a2507'
-    ctx.lineWidth = 4.5
-    ctx.lineCap = 'round'
-    ctx.beginPath()
-    ctx.moveTo(bx, -bh)
-    ctx.quadraticCurveTo(bx + 14, -bh * 0.45, bx + 11, 0)
-    ctx.quadraticCurveTo(bx + 14, bh * 0.45, bx, bh)
-    ctx.stroke()
-
-    // Wood highlight
-    ctx.strokeStyle = '#a0683d'
-    ctx.lineWidth = 1.5
-    ctx.lineCap = 'butt'
-    ctx.beginPath()
-    ctx.moveTo(bx + 1, -bh + 2)
-    ctx.quadraticCurveTo(bx + 9, -bh * 0.4, bx + 7, 0)
-    ctx.stroke()
-
-    // Bowstring
-    ctx.strokeStyle = 'rgba(240,230,185,0.9)'
-    ctx.lineWidth = 1.3
-    ctx.beginPath()
-    ctx.moveTo(bx, -bh)
-    ctx.quadraticCurveTo(bx - 6, 0, bx, bh)
-    ctx.stroke()
-
-    // Nocked arrow — shaft
-    ctx.strokeStyle = '#8b4c1a'
-    ctx.lineWidth = 2.2
-    ctx.lineCap = 'round'
-    ctx.beginPath()
-    ctx.moveTo(R, 0)
-    ctx.lineTo(bx + 13, 0)
-    ctx.stroke()
-
-    // Arrowhead
-    ctx.fillStyle = '#c8d4dc'
-    ctx.strokeStyle = '#6b7a88'
-    ctx.lineWidth = 0.8
-    ctx.beginPath()
-    ctx.moveTo(bx + 17, 0)
-    ctx.lineTo(bx + 12, -3.5)
-    ctx.lineTo(bx + 12, 3.5)
-    ctx.closePath()
-    ctx.fill()
-    ctx.stroke()
-
-    // Fletching (two triangular feathers)
-    ctx.fillStyle = isMe ? '#fbbf24' : '#e2e8f0'
-    for (const sign of [1, -1]) {
+    // ── 3. Sprite image — rotate penuh tanpa terbalik ──
+    const img = getPlayerCharImg(p.id)
+    const half = SIZE / 2
+    if (img && img.complete && img.naturalWidth > 0) {
+        ctx.save()
+        ctx.translate(p.x, p.y)
+        if (Math.cos(p.angle) >= 0) {
+            // Hadap kanan: rotate normal (-90° s/d 90°), sprite tidak pernah terbalik
+            ctx.rotate(p.angle)
+        } else {
+            // Hadap kiri: flip X lalu rotate dengan (π - angle)
+            // Rumus: setelah scale(-1,1), rotate(r) → arah efektif = π - r
+            // Agar arah efektif = p.angle → r = π - p.angle
+            ctx.scale(-1, 1)
+            ctx.rotate(Math.PI - p.angle)
+        }
+        ctx.drawImage(img, -half, -half, SIZE, SIZE)
+        ctx.restore()
+    } else {
+        // Fallback: filled circle while image loads
+        ctx.save()
+        ctx.translate(p.x, p.y)
         ctx.beginPath()
-        ctx.moveTo(R + 1, 0)
-        ctx.lineTo(R + 6, sign * 5.5)
-        ctx.lineTo(R + 10, 0)
-        ctx.closePath()
+        ctx.arc(0, 0, R, 0, Math.PI * 2)
+        ctx.fillStyle = tc
         ctx.fill()
+        ctx.strokeStyle = isMe ? '#facc15' : darkenColor(tc, 20)
+        ctx.lineWidth = isMe ? 2.5 : 1.8
+        ctx.stroke()
+        ctx.restore()
     }
 
-    ctx.restore()   // bow rotation
-    ctx.restore()   // translate
-
-    // ── 6. Name badge ──
+    // ── 4. Name badge ──
     ctx.save()
     const label = p.name + (isMe ? ' ★' : '')
     ctx.font = 'bold 11px Inter, sans-serif'
@@ -237,7 +137,7 @@ function drawPlayer(ctx, p, isMe) {
     const bw = tw + pad * 2
     const bh2 = 17
     const bxL = p.x - bw / 2
-    const byL = p.y - R - 24
+    const byL = p.y - half - 10
 
     ctx.fillStyle = isMe ? 'rgba(250,204,21,0.93)' : 'rgba(8,12,26,0.83)'
     ctx.beginPath()
@@ -317,88 +217,93 @@ function drawArrow(ctx, arrow) {
     ctx.restore()
 }
 
-function drawHUD(ctx, players, myId, gameW, gameH, mode) {
-    const is2v2 = mode === '2v2'
-    const HUD_H = is2v2 ? 86 : 56
-
-    // Top bar background
-    ctx.fillStyle = 'rgba(0,0,0,0.62)'
-    ctx.fillRect(0, 0, gameW, HUD_H)
-
-    if (is2v2) {
-        const redTeam = players.filter(p => p.team === 'Red')
-        const blueTeam = players.filter(p => p.team === 'Blue')
-        redTeam.forEach((p, i) => drawHealthBar(ctx, p, 10, 6 + i * 40, false, p.id === myId))
-        blueTeam.forEach((p, i) => drawHealthBar(ctx, p, gameW - 210, 6 + i * 40, true, p.id === myId))
-        // Team labels
-        ctx.save()
-        ctx.font = 'bold 10px Inter, sans-serif'
-        ctx.fillStyle = 'rgba(239,68,68,0.8)'
-        ctx.textAlign = 'left'
-        ctx.fillText('TIM MERAH', 10, HUD_H - 4)
-        ctx.fillStyle = 'rgba(59,130,246,0.8)'
-        ctx.textAlign = 'right'
-        ctx.fillText('TIM BIRU', gameW - 10, HUD_H - 4)
-        ctx.restore()
-    } else {
-        const r = players.find(p => p.team === 'Red')
-        const b = players.find(p => p.team === 'Blue')
-        if (r) drawHealthBar(ctx, r, 20, 10, false, r.id === myId)
-        if (b) drawHealthBar(ctx, b, gameW - 220, 10, true, b.id === myId)
-    }
-
-    // Center VS icon
+function drawPillBackdrop(ctx, x, y, w, h, accentHex) {
     ctx.save()
-    ctx.font = 'bold 20px Inter, sans-serif'
-    ctx.fillStyle = '#facc15'
-    ctx.textAlign = 'center'
-    ctx.shadowColor = 'rgba(0,0,0,0.6)'
-    ctx.shadowBlur = 6
-    ctx.fillText('⚔', gameW / 2, HUD_H / 2 + 8)
+    ctx.fillStyle = 'rgba(5,10,24,0.72)'
+    ctx.strokeStyle = accentHex + '55'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.roundRect(x, y, w, h, 10)
+    ctx.fill()
+    ctx.stroke()
     ctx.restore()
 }
 
-function drawHealthBar(ctx, player, x, y, rtl, isMe) {
-    const BAR_W = 200
-    const BAR_H = 26
+function drawCompactBar(ctx, player, x, y, barW, isMe) {
     const hp = Math.max(0, player.hp)
     const pct = hp / 100
+    const BAR_H = 7
+    const barColor = pct > 0.5 ? '#22c55e' : pct > 0.25 ? '#eab308' : '#ef4444'
 
     // Name
     ctx.save()
-    ctx.font = `bold 11px Inter, sans-serif`
-    ctx.fillStyle = isMe ? '#facc15' : '#e2e8f0'
-    ctx.textAlign = rtl ? 'right' : 'left'
-    ctx.fillText(`${player.name} (${player.colorName})`, rtl ? x + BAR_W : x, y + 10)
+    ctx.font = `${isMe ? 'bold' : '600'} 11px Inter, sans-serif`
+    ctx.fillStyle = isMe ? '#facc15' : '#d1d5db'
+    ctx.textAlign = 'left'
+    ctx.fillText(player.name, x, y + 11)
+    // HP number
+    ctx.fillStyle = '#6b7280'
+    ctx.font = '10px Inter, sans-serif'
+    ctx.textAlign = 'right'
+    ctx.fillText(`${hp}`, x + barW, y + 11)
     ctx.restore()
 
-    // Bar background
-    ctx.fillStyle = 'rgba(255,255,255,0.15)'
+    // Track
+    ctx.fillStyle = 'rgba(255,255,255,0.1)'
     ctx.beginPath()
-    ctx.roundRect(x, y + 14, BAR_W, BAR_H, 5)
+    ctx.roundRect(x, y + 15, barW, BAR_H, 3)
     ctx.fill()
 
-    // HP fill
-    const barColor = pct > 0.5 ? '#22c55e' : pct > 0.25 ? '#eab308' : '#ef4444'
-    ctx.fillStyle = barColor
-    ctx.beginPath()
-    const fillW = BAR_W * pct
-    if (rtl) {
-        ctx.roundRect(x + (BAR_W - fillW), y + 14, fillW, BAR_H, 5)
-    } else {
-        ctx.roundRect(x, y + 14, fillW, BAR_H, 5)
+    // Fill
+    if (pct > 0) {
+        ctx.fillStyle = barColor
+        ctx.beginPath()
+        ctx.roundRect(x, y + 15, barW * pct, BAR_H, 3)
+        ctx.fill()
     }
-    ctx.fill()
+}
 
-    // HP text
-    ctx.save()
-    ctx.font = 'bold 13px Inter, sans-serif'
-    ctx.fillStyle = '#fff'
-    ctx.textAlign = 'center'
-    ctx.shadowColor = 'rgba(0,0,0,0.7)'
-    ctx.shadowBlur = 3
-    ctx.fillText(`${hp} HP`, x + BAR_W / 2, y + 14 + BAR_H / 2 + 5)
-    ctx.restore()
+function drawHUD(ctx, players, myId, gameW, gameH, mode) {
+    const isPractice = mode === 'practice'
+    const PAD = 10
+    const PW = 185    // pill width
+    const ROW = 34     // height per player row
+
+    const leftPlayers = isPractice
+        ? players.filter(p => p.team !== 'Bot')
+        : players.filter(p => p.team === 'Red' || p.team === 'Orange')
+    const rightPlayers = isPractice
+        ? players.filter(p => p.team === 'Bot')
+        : players.filter(p => p.team === 'Blue' || p.team === 'Purple')
+
+    const leftH = Math.max(leftPlayers.length, 1) * ROW + 10
+    const rightH = Math.max(rightPlayers.length, 1) * ROW + 10
+
+    // Left pill
+    drawPillBackdrop(ctx, PAD, PAD, PW, leftH, '#ef4444')
+    leftPlayers.forEach((p, i) =>
+        drawCompactBar(ctx, p, PAD + 10, PAD + 8 + i * ROW, PW - 20, p.id === myId)
+    )
+
+    // Right pill
+    drawPillBackdrop(ctx, gameW - PAD - PW, PAD, PW, rightH, '#3b82f6')
+    rightPlayers.forEach((p, i) =>
+        drawCompactBar(ctx, p, gameW - PAD - PW + 10, PAD + 8 + i * ROW, PW - 20, p.id === myId)
+    )
+
+    // Center VS badge (not in practice)
+    if (!isPractice) {
+        ctx.save()
+        ctx.fillStyle = 'rgba(5,10,24,0.75)'
+        ctx.beginPath()
+        ctx.roundRect(gameW / 2 - 20, PAD, 40, 28, 8)
+        ctx.fill()
+        ctx.font = 'bold 12px Inter, sans-serif'
+        ctx.fillStyle = '#facc15'
+        ctx.textAlign = 'center'
+        ctx.fillText('VS', gameW / 2, PAD + 19)
+        ctx.restore()
+    }
 }
 
 function drawGround(ctx, gameW, gameH) {
@@ -563,6 +468,9 @@ export default function GamePage() {
         })
 
         socket.on('game_start', ({ obstacles, gameW, gameH, mapName, mapIndex, totalMaps, mode }) => {
+            // Reset sprite assignment so each game gives fresh unique chars
+            Object.keys(_playerCharMap).forEach(k => delete _playerCharMap[k])
+            _charCounter = 0
             obstaclesRef.current = obstacles
             gameDimRef.current = { w: gameW, h: gameH }
             modeRef.current = mode || '1v1'
@@ -779,14 +687,14 @@ export default function GamePage() {
                     {showMapBanner && mapInfo && (
                         <div className="map-banner">
                             <span className="map-banner-sub">Map {mapInfo.index + 1} / {mapInfo.total}</span>
-                            <span className="map-banner-name">🗺️ {mapInfo.name}</span>
+                            <span className="map-banner-name">{mapInfo.name}</span>
                         </div>
                     )}
 
                     {/* Persistent map badge (bottom-right) */}
                     {phase === 'playing' && mapInfo && (
                         <div className="map-badge">
-                            🗺️ {mapInfo.name} ({mapInfo.index + 1}/{mapInfo.total})
+                            {mapInfo.name} ({mapInfo.index + 1}/{mapInfo.total})
                         </div>
                     )}
 
@@ -803,20 +711,20 @@ export default function GamePage() {
                     {phase === 'waiting' && (
                         <div className="overlay">
                             <div className="overlay-card">
-                                <h2>⏳ Menunggu Lawan</h2>
+                                <h2>Menunggu Lawan</h2>
                                 <p>Bagikan kode room ke temanmu:</p>
                                 <div className="room-code-big">{roomCode}</div>
                                 <button className="btn btn-secondary" onClick={handleCopyRoom}>
-                                    {copied ? '✔ Tersalin!' : '📋 Salin Kode'}
+                                    {copied ? 'Tersalin!' : 'Salin Kode'}
                                 </button>
                                 <div className="players-waiting">
                                     {roomPlayers.map(p => (
                                         <div key={p.id} className="player-tag" style={{ color: TEAM_COLORS[p.colorName] || '#fff' }}>
-                                            ● {p.name} ({p.colorName})
+                                            {p.name} ({p.colorName})
                                         </div>
                                     ))}
                                 </div>
-                                <button className="btn btn-outline" onClick={handleLeave}>← Kembali</button>
+                                <button className="btn btn-outline" onClick={handleLeave}>Kembali ke Lobby</button>
                             </div>
                         </div>
                     )}
@@ -824,21 +732,29 @@ export default function GamePage() {
                     {phase === 'gameover' && (
                         <div className="overlay">
                             <div className="overlay-card gameover-card">
-                                <div className="trophy">🏆</div>
+                                <div className="trophy">
+                                    {winner?.team === 'Bot' ? '☠' : '★'}
+                                </div>
                                 <h2>
-                                    {winner?.color === 'Red' ? '🔴 Tim Merah' :
-                                        winner?.color === 'Blue' ? '🔵 Tim Biru' :
-                                            '🏹'} Menang!
+                                    {winner?.team === 'Bot'
+                                        ? 'Kamu Kalah'
+                                        : modeRef.current === 'practice'
+                                            ? 'Latihan Selesai!'
+                                            : winner?.color === 'Red' ? 'Tim Merah Menang'
+                                                : winner?.color === 'Blue' ? 'Tim Biru Menang'
+                                                    : 'Menang!'}
                                 </h2>
                                 <p className="winner-sub">{winner?.name}</p>
-                                {mapInfo && (
+                                {mapInfo && modeRef.current !== 'practice' && (
                                     <p className="next-map-hint">
                                         Map berikutnya: <strong>{mapInfo.total > 0 ? MAPS_NAMES[(mapInfo.index + 1) % mapInfo.total] : '?'}</strong>
                                     </p>
                                 )}
                                 <div className="btn-row">
-                                    <button className="btn btn-primary" onClick={handleRematch}>🔄 Main Lagi</button>
-                                    <button className="btn btn-outline" onClick={handleLeave}>← Lobby</button>
+                                    <button className="btn btn-primary" onClick={handleRematch}>
+                                        {modeRef.current === 'practice' ? 'Ulangi Latihan' : 'Main Lagi'}
+                                    </button>
+                                    <button className="btn btn-outline" onClick={handleLeave}>Kembali ke Lobby</button>
                                 </div>
                             </div>
                         </div>
@@ -847,9 +763,9 @@ export default function GamePage() {
                     {phase === 'error' && (
                         <div className="overlay">
                             <div className="overlay-card">
-                                <h2>❌ Error</h2>
+                                <h2>Error</h2>
                                 <p>{statusMsg}</p>
-                                <button className="btn btn-outline" onClick={handleLeave}>← Kembali</button>
+                                <button className="btn btn-outline" onClick={handleLeave}>Kembali</button>
                             </div>
                         </div>
                     )}
