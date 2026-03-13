@@ -457,7 +457,7 @@ function drawCompactBar(ctx, player, x, y, barW, isMe) {
     }
 }
 
-function drawHUD(ctx, players, myId, gameW, gameH, mode) {
+function drawHUD(ctx, players, myId, gameW, gameH, mode, score) {
     const isPractice = mode === 'practice'
     const PAD = 10
     const PW = 185    // pill width
@@ -485,17 +485,86 @@ function drawHUD(ctx, players, myId, gameW, gameH, mode) {
         drawCompactBar(ctx, p, gameW - PAD - PW + 10, PAD + 8 + i * ROW, PW - 20, p.id === myId)
     )
 
-    // Center VS badge (not in practice)
+    // ── Center Score Badge ─────────────────────────────────────────────────────
     if (!isPractice) {
+        const sc = score || {}
+        const leftScore = (sc.Red || 0) + (sc.Orange || 0)
+        const rightScore = (sc.Blue || 0) + (sc.Purple || 0)
+        const cx = gameW / 2
+        const badgeW = 110, badgeH = 42
+
         ctx.save()
-        ctx.fillStyle = 'rgba(5,10,24,0.75)'
+        // Background pill
+        ctx.fillStyle = 'rgba(5,10,24,0.82)'
+        ctx.strokeStyle = 'rgba(255,255,255,0.12)'
+        ctx.lineWidth = 1.5
         ctx.beginPath()
-        ctx.roundRect(gameW / 2 - 20, PAD, 40, 28, 8)
+        ctx.roundRect(cx - badgeW / 2, PAD, badgeW, badgeH, 10)
         ctx.fill()
-        ctx.font = 'bold 12px Inter, sans-serif'
-        ctx.fillStyle = '#facc15'
+        ctx.stroke()
+
+        // Left score number
+        ctx.font = 'bold 22px Inter, sans-serif'
+        ctx.textBaseline = 'alphabetic'
+        ctx.textAlign = 'right'
+        ctx.fillStyle = '#ef4444'
+        ctx.fillText(String(leftScore), cx - 14, PAD + 30)
+
+        // Divider
+        ctx.font = 'bold 14px Inter, sans-serif'
         ctx.textAlign = 'center'
-        ctx.fillText('VS', gameW / 2, PAD + 19)
+        ctx.fillStyle = 'rgba(255,255,255,0.55)'
+        ctx.fillText('—', cx, PAD + 28)
+
+        // Right score number
+        ctx.font = 'bold 22px Inter, sans-serif'
+        ctx.textAlign = 'left'
+        ctx.fillStyle = '#3b82f6'
+        ctx.fillText(String(rightScore), cx + 14, PAD + 30)
+
+        // "VS" label below the scores
+        ctx.font = 'bold 9px Inter, sans-serif'
+        ctx.textAlign = 'center'
+        ctx.fillStyle = 'rgba(255,255,255,0.35)'
+        ctx.fillText('SCORE', cx, PAD + 41)
+        ctx.restore()
+    } else {
+        // Practice score: player wins vs bot wins
+        const sc = score || {}
+        const playerWins = sc.Red || 0
+        const botWins = sc.Bot || 0
+        const cx = gameW / 2
+        const badgeW = 110, badgeH = 42
+
+        ctx.save()
+        ctx.fillStyle = 'rgba(5,10,24,0.82)'
+        ctx.strokeStyle = 'rgba(255,255,255,0.12)'
+        ctx.lineWidth = 1.5
+        ctx.beginPath()
+        ctx.roundRect(cx - badgeW / 2, PAD, badgeW, badgeH, 10)
+        ctx.fill()
+        ctx.stroke()
+
+        ctx.font = 'bold 22px Inter, sans-serif'
+        ctx.textBaseline = 'alphabetic'
+        ctx.textAlign = 'right'
+        ctx.fillStyle = '#22c55e'
+        ctx.fillText(String(playerWins), cx - 14, PAD + 30)
+
+        ctx.font = 'bold 14px Inter, sans-serif'
+        ctx.textAlign = 'center'
+        ctx.fillStyle = 'rgba(255,255,255,0.55)'
+        ctx.fillText('—', cx, PAD + 28)
+
+        ctx.font = 'bold 22px Inter, sans-serif'
+        ctx.textAlign = 'left'
+        ctx.fillStyle = '#94a3b8'
+        ctx.fillText(String(botWins), cx + 14, PAD + 30)
+
+        ctx.font = 'bold 9px Inter, sans-serif'
+        ctx.textAlign = 'center'
+        ctx.fillStyle = 'rgba(255,255,255,0.35)'
+        ctx.fillText('SCORE', cx, PAD + 41)
         ctx.restore()
     }
 }
@@ -638,7 +707,7 @@ export default function GamePage() {
             drawShieldBlocks(ctx, shieldBlocksRef.current, state.players)
             const myPlayer = state.players.find(p => p.id === myId)
             drawMyEffects(ctx, myPlayer, w, h)
-            drawHUD(ctx, state.players, myId, w, h, modeRef.current)
+            drawHUD(ctx, state.players, myId, w, h, modeRef.current, state.score)
         }
 
         animFrameRef.current = requestAnimationFrame(renderLoop)
@@ -964,6 +1033,27 @@ export default function GamePage() {
                                                     : 'Menang!'}
                                 </h2>
                                 <p className="winner-sub">{winner?.name}</p>
+                                {winner?.score && (
+                                    <div className="score-row">
+                                        {modeRef.current === 'practice' ? (
+                                            <>
+                                                <span style={{ color: '#22c55e' }}>{winner.score.Red || 0}</span>
+                                                <span className="score-dash">—</span>
+                                                <span style={{ color: '#94a3b8' }}>{winner.score.Bot || 0}</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <span style={{ color: '#ef4444' }}>
+                                                    {(winner.score.Red || 0) + (winner.score.Orange || 0)}
+                                                </span>
+                                                <span className="score-dash">—</span>
+                                                <span style={{ color: '#3b82f6' }}>
+                                                    {(winner.score.Blue || 0) + (winner.score.Purple || 0)}
+                                                </span>
+                                            </>
+                                        )}
+                                    </div>
+                                )}
                                 {mapInfo && modeRef.current !== 'practice' && (
                                     <p className="next-map-hint">
                                         Map berikutnya: <strong>{mapInfo.total > 0 ? MAPS_NAMES[(mapInfo.index + 1) % mapInfo.total] : '?'}</strong>

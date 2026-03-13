@@ -489,6 +489,23 @@ kbd {
     font-size: 14px;
 }
 
+.score-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    font-size: 36px;
+    font-weight: 900;
+    margin: 6px 0 2px;
+    letter-spacing: 2px;
+}
+
+.score-dash {
+    color: rgba(255,255,255,0.35);
+    font-size: 22px;
+    font-weight: 400;
+}
+
 /* Room badge */
 .room-badge {
     position: absolute;

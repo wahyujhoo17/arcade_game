@@ -134,6 +134,7 @@ function createRoom(roomId, mode = '1v1') {
         ticker: 0,
         gameStarted: false,
         winner: null,
+        score: {},           // { teamName: winsCount }
         loopInterval: null,
         arrowIdCounter: 0,
         mapIndex: 0,
@@ -379,11 +380,12 @@ function startGameLoop(room, io) {
                                     const winTeam = aliveTeams[0]
                                     const winNames = players.filter(pl => pl.team === winTeam).map(pl => pl.name)
                                     room.winner = { team: winTeam, name: winNames.join(' & '), color: winTeam }
+                                    room.score[winTeam] = (room.score[winTeam] || 0) + 1
                                 } else {
                                     room.winner = { team: 'Draw', name: 'Seri!', color: 'Draw' }
                                 }
                                 room.gameStarted = false
-                                io.to(room.id).emit('game_over', room.winner)
+                                io.to(room.id).emit('game_over', { ...room.winner, score: room.score })
                             }
                         }
                         if (!arrow.pierce) break
@@ -406,8 +408,9 @@ function startGameLoop(room, io) {
                             // Win if all bots dead
                             if (room.bots.every(b => !b.alive)) {
                                 room.winner = { team: 'Red', name: players[0]?.name || 'Pemain', color: '#ef4444' }
+                                room.score['Red'] = (room.score['Red'] || 0) + 1
                                 room.gameStarted = false
-                                io.to(room.id).emit('game_over', room.winner)
+                                io.to(room.id).emit('game_over', { ...room.winner, score: room.score })
                             }
                             break
                         }
@@ -431,8 +434,9 @@ function startGameLoop(room, io) {
                             if (p.hp <= 0) {
                                 p.alive = false
                                 room.winner = { team: 'Bot', name: 'Target', color: '#ef4444' }
+                                room.score['Bot'] = (room.score['Bot'] || 0) + 1
                                 room.gameStarted = false
-                                io.to(room.id).emit('game_over', room.winner)
+                                io.to(room.id).emit('game_over', { ...room.winner, score: room.score })
                             }
                             break
                         }
@@ -526,6 +530,7 @@ function startGameLoop(room, io) {
                 homing: a.homing, pierce: a.pierce, ice: a.ice,
             })),
             items: room.items,
+            score: room.score,
         })
     }, 1000 / TICK_RATE)
 }
